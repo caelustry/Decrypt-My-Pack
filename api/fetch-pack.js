@@ -95,6 +95,11 @@ export default async function handler(req, res) {
       username: "PackFetcher",
       offline: true, // no Xbox Live auth — fine for servers with online-mode off
       version: false, // let the library auto-negotiate the server's protocol version
+      // Vercel Functions can't compile native addons (no cmake in the build
+      // image), so the default 'raknet-native' backend fails to install.
+      // 'jsp-raknet' is a pure-JS RakNet implementation — no native build
+      // step required, works as-is inside a serverless function.
+      raknetBackend: "jsp-raknet",
     });
 
     client.on("connect_allowed", () => {
