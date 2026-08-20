@@ -10,10 +10,13 @@
     "lint": "eslint ."
   },
   "dependencies": {
-    "bedrock-protocol": "^3.58.2",
+    "bedrock-protocol": "^3.40.0",
     "lucide-react": "^0.474.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
+  },
+  "overrides": {
+    "raknet-native": "file:./native-stubs/raknet-native"
   },
   "devDependencies": {
     "@eslint/js": "^9.18.0",
