@@ -5,9 +5,25 @@ import PacketConsole from "./components/PacketConsole.jsx";
 import DownloadPanel from "./components/DownloadPanel.jsx";
 import StatusSidebar from "./components/StatusSidebar.jsx";
 import FaqSection from "./components/FaqSection.jsx";
-import { buildTimeline, buildFailureTimeline } from "./lib/mockStream.js";
 
 const INITIAL_STATS = { latency: 0, packetCount: 0, uptime: "00:00" };
+
+// Set this in Vercel's Environment Variables as VITE_FETCH_BACKEND_URL
+// (Project Settings → Environment Variables), pointing at your Render
+// service, e.g. https://bedrock-pack-fetcher-backend.onrender.com
+// Vite only exposes env vars prefixed with VITE_ to the client bundle.
+const BACKEND_URL = import.meta.env.VITE_FETCH_BACKEND_URL;
+
+// Rough, honest progress mapping — this reflects how far the *handshake
+// and pack-list negotiation* has gotten, not real byte-download progress.
+// Actual chunk-by-chunk download progress gets wired in once that part
+// of the backend exists.
+const PACKET_PROGRESS = {
+  network_settings: 15,
+  resource_packs_info: 40,
+  resource_pack_client_response: 50,
+  resource_pack_stack: 60,
+};
 
 export default function App() {
   const [status, setStatus] = useState("idle"); // idle | connecting | streaming | completed | error
@@ -16,20 +32,26 @@ export default function App() {
   const [targetIp, setTargetIp] = useState("");
   const [stats, setStats] = useState(INITIAL_STATS);
 
-  const timeoutsRef = useRef([]);
+  const eventSourceRef = useRef(null);
   const startedAtRef = useRef(null);
   const uptimeIntervalRef = useRef(null);
 
-  const clearAllTimers = useCallback(() => {
-    timeoutsRef.current.forEach(clearTimeout);
-    timeoutsRef.current = [];
+  const stopUptimeClock = useCallback(() => {
     if (uptimeIntervalRef.current) {
       clearInterval(uptimeIntervalRef.current);
       uptimeIntervalRef.current = null;
     }
   }, []);
 
-  useEffect(() => () => clearAllTimers(), [clearAllTimers]);
+  const closeConnection = useCallback(() => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+    stopUptimeClock();
+  }, [stopUptimeClock]);
+
+  useEffect(() => () => closeConnection(), [closeConnection]);
 
   function startUptimeClock() {
     startedAtRef.current = Date.now();
@@ -41,55 +63,90 @@ export default function App() {
     }, 1000);
   }
 
-  function handleConnect({ ip, port, forceError }) {
-    clearAllTimers();
+  function handleConnect({ ip, port }) {
+    closeConnection();
     setLogs([]);
     setProgress(0);
     setTargetIp(ip);
-    setStats({ ...INITIAL_STATS, latency: Math.floor(24 + Math.random() * 40) });
+    setStats(INITIAL_STATS);
+
+    if (!BACKEND_URL) {
+      setStatus("error");
+      setLogs([
+        {
+          level: "ERROR",
+          text: "VITE_FETCH_BACKEND_URL is not set. Add it in Vercel's Environment Variables, pointing at your Render backend URL, then redeploy.",
+        },
+      ]);
+      return;
+    }
+
     setStatus("connecting");
     startUptimeClock();
 
-    const timeline = forceError ? buildFailureTimeline({ ip, port }) : buildTimeline({ ip, port });
-    let cumulativeDelay = 0;
+    const url = `${BACKEND_URL.replace(/\/$/, "")}/fetch-pack?ip=${encodeURIComponent(ip)}&port=${encodeURIComponent(port)}`;
+    const es = new EventSource(url);
+    eventSourceRef.current = es;
 
-    timeline.forEach((entry, idx) => {
-      cumulativeDelay += entry.delay;
-      const t = setTimeout(() => {
-        setLogs((prev) => [...prev, { level: entry.level, text: entry.text }]);
-        setStats((s) => ({ ...s, packetCount: s.packetCount + (entry.level === "PACKET" || entry.level === "STREAM" ? 1 : 0) }));
+    setLogs([
+      {
+        level: "INFO",
+        text: "Contacting backend... (Render's free tier can take 30-60s to wake up from a cold start)",
+      },
+    ]);
 
-        if (entry.progress !== null) {
-          setProgress(entry.progress);
-        }
+    es.onmessage = (event) => {
+      let payload;
+      try {
+        payload = JSON.parse(event.data);
+      } catch {
+        return;
+      }
 
-        const isLast = idx === timeline.length - 1;
-        if (isLast) {
-          if (forceError) {
-            setStatus("error");
-            clearInterval(uptimeIntervalRef.current);
-          } else {
-            setStatus("completed");
-            clearInterval(uptimeIntervalRef.current);
-          }
-        }
-      }, cumulativeDelay);
-      timeoutsRef.current.push(t);
-    });
+      const { level, text } = payload;
+      setLogs((prev) => [...prev, { level, text }]);
 
-    // Kick the status into "streaming" once packet-info exchange begins,
-    // even before the first STREAM-level line lands.
-    const streamKickoffDelay = timeline
-      .slice(0, timeline.findIndex((l) => l.level === "STREAM") + 1)
-      .reduce((sum, l) => sum + l.delay, 0);
-    if (!forceError && streamKickoffDelay > 0) {
-      const t = setTimeout(() => setStatus("streaming"), streamKickoffDelay);
-      timeoutsRef.current.push(t);
-    }
+      setStats((s) => ({
+        ...s,
+        packetCount: s.packetCount + (level === "PACKET" ? 1 : 0),
+      }));
+
+      if (level === "PACKET" && status !== "error") {
+        setStatus("streaming");
+      }
+
+      const matchedPacket = Object.keys(PACKET_PROGRESS).find((name) => text.includes(name));
+      if (matchedPacket) {
+        setProgress(PACKET_PROGRESS[matchedPacket]);
+      }
+
+      if (level === "DONE") {
+        setStatus("completed");
+        stopUptimeClock();
+      }
+      if (level === "ERROR") {
+        setStatus("error");
+        stopUptimeClock();
+        es.close();
+      }
+    };
+
+    es.onerror = () => {
+      setLogs((prev) => [
+        ...prev,
+        {
+          level: "ERROR",
+          text: "Lost connection to backend (network issue, backend asleep/down, or CORS misconfiguration).",
+        },
+      ]);
+      setStatus("error");
+      stopUptimeClock();
+      es.close();
+    };
   }
 
   function handleReset() {
-    clearAllTimers();
+    closeConnection();
     setStatus("idle");
     setLogs([]);
     setProgress(0);
@@ -123,9 +180,10 @@ export default function App() {
         <footer className="border-t border-white/[0.06] px-5 py-8 sm:px-8">
           <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-3 text-center sm:flex-row sm:text-left">
             <p className="text-xs text-slate-600">
-              Bedrock Pack Fetcher — a protocol-visualization tool. Built for learning RakNet &amp; resource-pack flow.
+              Bedrock Pack Fetcher — connects to a real Bedrock server via a backend bot client.
+              Chunk download &amp; archive assembly coming soon.
             </p>
-            <p className="font-mono text-[11px] text-slate-700">v1.0.0</p>
+            <p className="font-mono text-[11px] text-slate-700">v1.1.0</p>
           </div>
         </footer>
       </div>
