@@ -1,10 +1,9 @@
 import { useState } from "react";
-import { Server, Hash, Zap, Loader2, TriangleAlert } from "lucide-react";
+import { Server, Hash, Zap, Loader2 } from "lucide-react";
 
 export default function ConnectionForm({ status, onConnect, onReset }) {
   const [ip, setIp] = useState("play.example-bedrock.net");
   const [port, setPort] = useState("19132");
-  const [simulateError, setSimulateError] = useState(false);
   const [touched, setTouched] = useState(false);
 
   const isBusy = status === "connecting" || status === "streaming";
@@ -21,7 +20,7 @@ export default function ConnectionForm({ status, onConnect, onReset }) {
     if (ip.trim().length === 0 || Number.isNaN(portNum) || portNum < 1 || portNum > 65535) {
       return;
     }
-    onConnect({ ip: ip.trim(), port: portNum, forceError: simulateError });
+    onConnect({ ip: ip.trim(), port: portNum });
   }
 
   return (
@@ -73,21 +72,7 @@ export default function ConnectionForm({ status, onConnect, onReset }) {
         </div>
       </div>
 
-      <div className="mt-5 flex flex-col-reverse items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-500 select-none">
-          <input
-            type="checkbox"
-            checked={simulateError}
-            disabled={isBusy}
-            onChange={(e) => setSimulateError(e.target.checked)}
-            className="h-3.5 w-3.5 rounded border-white/20 bg-void-950 text-amber-400 accent-amber-400"
-          />
-          <span className="flex items-center gap-1">
-            <TriangleAlert className="h-3 w-3" strokeWidth={2} />
-            Simulate timeout (demo)
-          </span>
-        </label>
-
+      <div className="mt-5 flex flex-col-reverse items-stretch gap-3 sm:flex-row sm:items-center sm:justify-end">
         <div className="flex gap-2.5">
           {(status === "completed" || status === "error") && (
             <button
